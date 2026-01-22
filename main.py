@@ -5,8 +5,11 @@ from datetime import datetime
 from ingestion.kafka_consumer import consume_messages
 from database.influx_writer import InfluxWriter
 from inference.predict import AnomalyPredictor
-from inference.threshold import static_threshold
 from config.logger import get_logger
+from alerts.alert_manager import send_alert
+
+from inference.load_threshold import load_threshold
+THRESHOLD = load_threshold()
 
 logger = get_logger("main")
 
@@ -18,7 +21,6 @@ predictor = AnomalyPredictor(window_size=30)
 # Store last N data points for window-based inference
 buffer = deque(maxlen=60)  # keep some extra points
 
-THRESHOLD = static_threshold(0.05)  # (we’ll improve to percentile later)
 
 
 def process_message(data: dict):
@@ -66,6 +68,7 @@ def process_message(data: dict):
 
     if is_anomaly:
         logger.warning(f"🚨 ANOMALY DETECTED: {result}")
+        send_alert(result)
     else:
         logger.info(f"✅ Normal: score={latest_error:.5f}")
 
