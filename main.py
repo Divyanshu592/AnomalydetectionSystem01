@@ -1,46 +1,75 @@
-from influxdb_client import InfluxDBClient, Point
-from influxdb_client.client.write_api import SYNCHRONOUS
+import numpy as np
+from collections import deque
+from datetime import datetime
 
-from config.settings import settings
+from ingestion.kafka_consumer import consume_messages
+from database.influx_writer import InfluxWriter
+from inference.predict import AnomalyPredictor
+from inference.threshold import static_threshold
 from config.logger import get_logger
 
-logger = get_logger("influx-writer")
+logger = get_logger("main")
+
+writer = InfluxWriter()
+
+# Load Predictor (model + scaler)
+predictor = AnomalyPredictor(window_size=30)
+
+# Store last N data points for window-based inference
+buffer = deque(maxlen=60)  # keep some extra points
+
+THRESHOLD = static_threshold(0.05)  # (we’ll improve to percentile later)
 
 
-class InfluxWriter:
-    def __init__(self):
-        self.client = InfluxDBClient(
-            url=settings.INFLUX_URL,
-            token=settings.INFLUX_TOKEN,
-            org=settings.INFLUX_ORG
-        )
-        self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
-        logger.info("✅ InfluxDB client initialized")
+def process_message(data: dict):
+    """
+    Expected incoming Kafka data example:
+    {
+      "device_id": "sensor_01",
+      "value": 12.3,
+      "timestamp": "2026-01-22T10:00:00Z"
+    }
+    """
 
-    def write_sensor_data(self, measurement: str, data: dict):
-        """
-        Example data expected:
-        {
-          "device_id": "sensor_01",
-          "value": 12.3,
-          "timestamp": "2026-01-22T10:00:00Z"
-        }
-        """
+    # 1) Store raw data
+    writer.write_sensor_data(measurement="live_data", data=data)
 
-        point = Point(measurement)
+    # 2) Add numeric features into buffer
+    # Here only using "value" as a feature.
+    # Later can extend to multiple sensor fields.
+    if "value" not in data:
+        return
 
-        # tags (identifiers)
-        if "device_id" in data:
-            point = point.tag("device_id", str(data["device_id"]))
+    buffer.append([float(data["value"])])
 
-        # fields (values)
-        for key, value in data.items():
-            if key not in ["device_id", "timestamp"]:
-                if isinstance(value, (int, float, bool, str)):
-                    point = point.field(key, value)
+    # 3) Do inference only when enough points exist
+    if len(buffer) < predictor.window_size:
+        return
 
-        # optional timestamp handling
-        # InfluxDB can use server time if you don't specify
-        self.write_api.write(bucket=settings.INFLUX_BUCKET, record=point)
+    X = np.array(buffer, dtype=np.float32)  # shape: (n_samples, 1)
 
-        logger.info(f"📌 Written to Influx: {measurement} -> {data}")
+    errors = predictor.score(X)
+    latest_error = float(errors[-1])
+
+    is_anomaly = latest_error > THRESHOLD
+
+    result = {
+        "device_id": data.get("device_id", "unknown"),
+        "value": float(data["value"]),
+        "anomaly_score": latest_error,
+        "is_anomaly": bool(is_anomaly),
+        "timestamp": data.get("timestamp", datetime.utcnow().isoformat())
+    }
+
+    # 4) Store anomaly result
+    writer.write_sensor_data(measurement="anomaly_result", data=result)
+
+    if is_anomaly:
+        logger.warning(f"🚨 ANOMALY DETECTED: {result}")
+    else:
+        logger.info(f"✅ Normal: score={latest_error:.5f}")
+
+
+if __name__ == "__main__":
+    logger.info("🚀 Starting Anomaly Detection Pipeline (Real-Time)...")
+    consume_messages(on_message=process_message)
