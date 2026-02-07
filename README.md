@@ -6,6 +6,15 @@
 SentinelGuard is an end-to-end, production-ready time-series anomaly detection system built using deep learning autoencoders.
 It detects abnormal patterns in historical financial data using unsupervised learning, dynamic thresholding, and interactive visualization.
 
+## 🌐 Live Demo
+
+You can access the live application here:
+
+🔗 **[https://anomalydetectionsystem01.streamlit.app//](https://anomalydetectionsystem01.streamlit.app//)**
+
+---
+
+
 ## 📌 Project Highlights
 
 🔹 Primary Model: LSTM Autoencoder (high accuracy, stable)
